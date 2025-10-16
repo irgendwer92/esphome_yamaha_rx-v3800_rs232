@@ -49,6 +49,30 @@ script:
           id(yamaha_uart).write_str("0");
           id(yamaha_uart).write_str(code.c_str());
           id(yamaha_uart).write_byte(0x03);
+          
+  - id: send_sys_vol_main   # absolute Master Volume
+    parameters:
+      vol_hex: string       # z. B. "C7"
+    then:
+      - uart.write: !lambda |-
+          id(yamaha_uart).write_byte(0x02);  // STX
+          id(yamaha_uart).write_str("2");    // SW=2 (System)
+          id(yamaha_uart).write_str("3");    // CMDT0 = 3  -> '23'
+          id(yamaha_uart).write_str("0");    // CMDT1 = 0  -> '230'
+          id(yamaha_uart).write_str(vol_hex.c_str()); // CMDT2/3 = XX (Wert)
+          id(yamaha_uart).write_byte(0x03);  // ETX
+
+  - id: send_sys_vol_zone2  # absolute Zone2 Volume
+    parameters:
+      vol_hex: string       # z. B. "50"
+    then:
+      - uart.write: !lambda |-
+          id(yamaha_uart).write_byte(0x02);  // STX
+          id(yamaha_uart).write_str("2");    // SW=2
+          id(yamaha_uart).write_str("3");    // '23'
+          id(yamaha_uart).write_str("1");    // Subcmd Zone2 -> '231'
+          id(yamaha_uart).write_str(vol_hex.c_str()); // XX
+          id(yamaha_uart).write_byte(0x03);  // ETX
 
 # ===== POWER SCHALTER =====
 switch:
@@ -118,6 +142,45 @@ number:
           char buf[5];
           sprintf(buf, "7A5%02X", vol & 0xFF);
           id(send_yamaha_command).execute(std::string(buf));
+          
+  - platform: template
+    id: main_volume_abs
+    name: "Main Volume (abs)"
+    unit_of_measurement: "dB"
+    min_value: -99.0
+    max_value: 0.0
+    step: 0.5
+    mode: slider
+    set_action:
+      - lambda: |-
+          // clamp & map dB -> HEX (01..C7)
+          float db = x;
+          if (db > 0.0f) db = 0.0f;
+          if (db < -99.0f) db = -99.0f;
+          int val = (int) lroundf((db + 99.0f)/0.5f) + 1; // 1..199 (0x01..0xC7)
+          if (val < 0x01) val = 0x01;
+          if (val > 0xC7) val = 0xC7;
+          char hexv[3]; sprintf(hexv, "%02X", val);
+          id(send_sys_vol_main).execute(std::string(hexv));
+          
+  - platform: template
+    id: zone2_volume_abs
+    name: "Zone2 Volume (abs)"
+    unit_of_measurement: "dB"
+    min_value: -79
+    max_value: 0
+    step: 1
+    mode: slider
+    set_action:
+      - lambda: |-
+          int db = (int) lroundf(x);
+          if (db > 0) db = 0;
+          if (db < -79) db = -79;
+          int val = (db + 79) + 1; // 1..80 (0x01..0x50)
+          if (val < 0x01) val = 0x01;
+          if (val > 0x50) val = 0x50;
+          char hexv[3]; sprintf(hexv, "%02X", val);
+          id(send_sys_vol_zone2).execute(std::string(hexv));
 select:
 # ===== INPUT SELECTOR =====
   - platform: template
@@ -161,33 +224,117 @@ select:
           else if (s=="V-AUX") cmd="7A55";
           if (!cmd.empty()) id(send_yamaha_command).execute(cmd);
 
+  - platform: template
+    id: zone2_input_select
+    name: "Zone2 Input"
+    optimistic: false
+    options:
+      - "PHONO"
+      - "CD"
+      - "TUNER"
+      - "CD-R"
+      - "MD/TAPE"
+      - "DVD"
+      - "D-TV/LD"
+      - "CBL/SAT"
+      - "SAT"
+      - "VCR1"
+      - "VCR2/DVR"
+      - "VCR3"
+      - "V-AUX"
+    set_action:
+      - lambda: |-
+          // Zone2 Operation (SW='0'):
+          // 7AD0 PHONO, 7AD1 CD, 7AD2 TUNER, 7AD4 CD-R,
+          // 7ACF MD/TAPE, 7ACD DVD, 7AD9 D-TV/LD, 7ACC CBL/SAT, 7ACB SAT,
+          // 7AD6 VCR1, 7AD7 VCR2/DVR, 7ACE VCR3, 7AD8 V-AUX
+          std::string s = x; std::string cmd;
+          if (s=="PHONO") cmd="7AD0";
+          else if (s=="CD") cmd="7AD1";
+          else if (s=="TUNER") cmd="7AD2";
+          else if (s=="CD-R") cmd="7AD4";
+          else if (s=="MD/TAPE") cmd="7ACF";
+          else if (s=="DVD") cmd="7ACD";
+          else if (s=="D-TV/LD") cmd="7AD9";
+          else if (s=="CBL/SAT") cmd="7ACC";
+          else if (s=="SAT") cmd="7ACB";
+          else if (s=="VCR1") cmd="7AD6";
+          else if (s=="VCR2/DVR") cmd="7AD7";
+          else if (s=="VCR3") cmd="7ACE";
+          else if (s=="V-AUX") cmd="7AD8";
+          if (!cmd.empty()) id(send_yamaha_command).execute(cmd);
+
 # ===== SURROUND PROGRAMME =====
 
   - platform: template
+    id: surround_select
     name: "Surround Program"
-    optimistic: true
+    optimistic: false
     options:
-      - "Straight"
-      - "7ch Stereo"
-      - "Adventure"
-      - "Sci-Fi"
-      - "Concert Hall"
-      - "Sports"
-      - "Drama"
+      - "Stereo"
+      - "Hall A"
+      - "Hall B"
+      - "Hall C"
+      - "The Roxy Theater"
+      - "Warehouse Loft"
+      - "Arena"
+      - "Disco"
+      - "Party"
+      - "Game"
+      - "6/8CH Stereo"
+      - "Pop/Rock"
+      - "DJ"
+      - "Classical/Opera"
+      - "Pavillion"
       - "Mono Movie"
+      - "Variety Sports"
+      - "Spectacle"
+      - "Sci-Fi"
+      - "Adventure"
+      - "General"
+      - "Normal"
+      - "Enhanced"
+      - "PLII Movie"
+      - "PLII Music"
+      - "Neo:6 Movie"
+      - "Neo:6 Music"
     set_action:
       - lambda: |-
-          std::string s = x;
-          std::string cmd;
-          if (s == "Straight") cmd = "7A30";
-          else if (s == "7ch Stereo") cmd = "7A31";
-          else if (s == "Adventure") cmd = "7A32";
-          else if (s == "Sci-Fi") cmd = "7A33";
-          else if (s == "Concert Hall") cmd = "7A34";
-          else if (s == "Sports") cmd = "7A35";
-          else if (s == "Drama") cmd = "7A36";
-          else if (s == "Mono Movie") cmd = "7A37";
-          id(send_yamaha_command).execute(cmd);
+          // Operation (SW='0') – Auszug:
+          // 7EE0 Stereo, 7EE1 Hall A, 7EE2 Hall B, 7EE3 Hall C, 7EEE Warehouse Loft, 7EEF Arena,
+          // 7EF0 Disco, 7EF1 Party, 7EF2 Game, 7EFF 6/8ch Stereo, 7EF3 Pop/Rock, 7EF4 DJ,
+          // 7EF5 Classical/Opera, 7EF6 Pavillion, 7EF7 Mono Movie, 7EF8 Variety Sports,
+          // 7EF9 Spectacle, 7EFA Sci-Fi, 7EFB Adventure, 7EFC General, 7EFD Normal, 7EFE Enhanced,
+          // 7E67 PLII Movie, 7E68 PLII Music, 7E69 Neo:6 Cinema, 7E6A Neo:6 Music
+          std::string s=x, cmd;
+          if (s=="Stereo") cmd="7EE0";
+          else if (s=="Hall A") cmd="7EE1";
+          else if (s=="Hall B") cmd="7EE2";
+          else if (s=="Hall C") cmd="7EE3";
+          else if (s=="The Roxy Theater") cmd="7EED";        // Roxy
+          else if (s=="Warehouse Loft") cmd="7EEE";
+          else if (s=="Arena") cmd="7EEF";
+          else if (s=="Disco") cmd="7EF0";
+          else if (s=="Party") cmd="7EF1";
+          else if (s=="Game") cmd="7EF2";
+          else if (s=="6/8CH Stereo") cmd="7EFF";
+          else if (s=="Pop/Rock") cmd="7EF3";
+          else if (s=="DJ") cmd="7EF4";
+          else if (s=="Classical/Opera") cmd="7EF5";
+          else if (s=="Pavillion") cmd="7EF6";
+          else if (s=="Mono Movie") cmd="7EF7";
+          else if (s=="Variety Sports") cmd="7EF8";
+          else if (s=="Spectacle") cmd="7EF9";
+          else if (s=="Sci-Fi") cmd="7EFA";
+          else if (s=="Adventure") cmd="7EFB";
+          else if (s=="General") cmd="7EFC";
+          else if (s=="Normal") cmd="7EFD";
+          else if (s=="Enhanced") cmd="7EFE";
+          else if (s=="PLII Movie") cmd="7E67";
+          else if (s=="PLII Music") cmd="7E68";
+          else if (s=="Neo:6 Movie") cmd="7E69";  // (Cinema)
+          else if (s=="Neo:6 Music") cmd="7E6A";
+          if (!cmd.empty()) id(send_yamaha_command).execute(cmd);
 
 # ===== OSD MENÜ UND NAVIGATION =====
 button:
@@ -225,19 +372,21 @@ button:
 text_sensor:
   - platform: template
     id: input_state
-    name: "Yamaha Input State"
+    name: "Main Input State"
     on_value:
       then:
         - lambda: |-
             if (!id(input_state).state.empty())
               id(main_input_select).publish_state(id(input_state).state.c_str());
-  - platform: template
-    id: zone2_input_state
-    name: "Zone2 Input State"
 
   - platform: template
     id: surround_program_state
     name: "Surround Program"
+    on_value:
+      then:
+        - lambda: |-
+            if (!id(surround_program_state).state.empty())
+              id(surround_select).publish_state(id(surround_program_state).state.c_str());
 
   - platform: template
     id: osd_state
@@ -247,6 +396,15 @@ text_sensor:
     id: last_report
     name: "Yamaha Report Raw"
     icon: mdi:console-line
+    
+  - platform: template
+    id: zone2_input_state
+    name: "Zone2 Input State"
+    on_value:
+      then:
+        - lambda: |-
+            if (!id(zone2_input_state).state.empty())
+              id(zone2_input_select).publish_state(id(zone2_input_state).state.c_str());
 
 binary_sensor:   
   - platform: template
@@ -265,17 +423,24 @@ binary_sensor:
     device_class: power
     optimistic: true  # siehe Hinweis unten
 sensor:
+
   - platform: template
     id: volume_state
     name: "Main Volume State"
     unit_of_measurement: "dB"
     accuracy_decimals: 1
+    on_value:
+      then:
+        - lambda: 'id(main_volume_abs).publish_state(x);'
 
   - platform: template
     id: zone2_volume_state
     name: "Zone2 Volume State"
     unit_of_measurement: "dB"
-    accuracy_decimals: 1
+    accuracy_decimals: 0
+    on_value:
+      then:
+        - lambda: 'id(zone2_volume_abs).publish_state(x);'
 
 on_uart_data:
   - id: yamaha_uart
